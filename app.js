@@ -173,11 +173,33 @@ function escapeHtml(text) {
 }
 
 async function deleteItem(docId) {
-    if (!confirm('Удалить этот товар?')) return;
+    if (!confirm('Удалить этот товар? Данные будут удалены из таблицы безвозвратно.')) return;
+    
     try {
+        // Получаем название товара для журнала
         const doc = await localDB.get(docId);
+        const itemName = doc.name || 'Неизвестный товар';
+        
+        // Удаляем из локальной базы
         await localDB.remove(doc);
+        
+        // Отправляем команду удаления в Google Таблицу
+        const success = await saveToCloud({
+            action: 'deleteItem',
+            id: docId,
+            user: currentUser,
+            name: itemName
+        });
+        
+        if (success) {
+            alert('✅ Товар удалён из таблицы');
+        } else {
+            alert('⚠️ Товар удалён локально, но не из таблицы (проверьте интернет)');
+        }
+        
+        // Обновляем интерфейс
         renderAll();
+        
     } catch (err) {
         alert('Ошибка: ' + err.message);
     }
