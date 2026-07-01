@@ -1,5 +1,5 @@
 // ================== НАСТРОЙКИ ==================
-const API_URL = 'https://script.google.com/macros/s/AKfycbwwdvYnW5fHkmr_iY8yR2j5z_R1BaZFdgYbOtEoUKf7WdzatAHgpRqzlPImnas6R2Ua_g/exec'; // ← ЗАМЕНИТЕ
+const API_URL = 'https://script.google.com/macros/s/AKfycbxmQ_21c5N6jTnWLl5_dVJzixuoUXlz1PQcfAiYmMmMiRA8S_6LO9zvv4Fmbdwul3f5gw/exec'; // ← ЗАМЕНИТЕ
 // ================================================
 
 
