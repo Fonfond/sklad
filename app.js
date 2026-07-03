@@ -388,7 +388,7 @@ function takePhotoForItem(itemId) {
                 const doc = await localDB.get(itemId);
                 doc.photoBase64 = base64;
                 await localDB.put(doc);
-                alert('✅ Фото сохранено!');
+                alert('✅ Фото сохранено локально!');
                 renderAll();
             } catch (err) {
                 alert('Ошибка: ' + err.message);
@@ -409,14 +409,14 @@ async function searchPhotoForItem(itemId, itemName) {
         const doc = await localDB.get(itemId);
         doc.photoUrl = url;
         await localDB.put(doc);
-        alert('✅ Фото сохранено!');
+        alert('✅ Фото из интернета сохранено!');
         renderAll();
     } catch (err) {
         alert('Ошибка: ' + err.message);
     }
 }
 
-// ================== УЛУЧШЕННЫЙ СКАНЕР ==================
+// ================== СКАНЕР (OCR.space API) ==================
 async function handleCameraFile(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -425,39 +425,48 @@ async function handleCameraFile(e) {
     if (!statusDiv) return;
     
     statusDiv.style.display = 'block';
-    statusDiv.innerHTML = '⏳ Загрузка модели русского языка (~15 МБ, только один раз)...';
+    statusDiv.innerHTML = '⏳ Отправка фото на распознавание...';
     
     try {
-        const worker = await Tesseract.createWorker('rus', Tesseract.OEM.LSTM_ONLY, {
-            langPath: 'https://tessdata.maintained.by/rus-rus2/',
+        // Создаём FormData для отправки
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('language', 'rus');
+        formData.append('apikey', 'helloworld'); // Бесплатный ключ OCR.space (500 запросов/день)
+        formData.append('OCREngine', '2'); // Более точный движок
+        
+        const response = await fetch('https://api.ocr.space/parse/image', {
+            method: 'POST',
+            body: formData
         });
         
-        await worker.setParameters({
-            tessedit_char_whitelist: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789.,;:- ',
-            preserve_interword_spaces: '1',
-            tessedit_pageseg_mode: Tesseract.PSM.AUTO,
-        });
+        const data = await response.json();
         
-        statusDiv.innerHTML = '⏳ Распознавание...';
+        if (data.IsErroredOnProcessing || !data.ParsedResults || data.ParsedResults.length === 0) {
+            statusDiv.innerHTML = '❌ Ошибка распознавания. Попробуйте другое фото с лучшим освещением.';
+            return;
+        }
         
-        const { data: { text } } = await worker.recognize(file);
-        await worker.terminate();
+        const text = data.ParsedResults[0].ParsedText;
         
+        // Парсим строки
         const lines = text.split('\n').filter(l => l.trim());
         scannedItemsBuffer = [];
         
         for (const line of lines) {
             const cleaned = line.trim();
-            if (!cleaned) continue;
+            if (!cleaned || cleaned.length < 2) continue;
             
             let name = cleaned;
             let qty = 1;
             
-            const match = cleaned.match(/^(.*?)[-\s]+(\d+)\s*(шт|кг|м|л|ед)?\.?\s*$/i);
+            // Паттерн: "Название 123" или "Название - 123 шт"
+            const match = cleaned.match(/^(.*?)[-\s]+(\d+)\s*(шт|кг|м|л|ед|уп)?\.?\s*$/i);
             if (match) {
                 name = match[1].trim();
                 qty = parseInt(match[2]) || 1;
             } else {
+                // Ищем любое число
                 const numMatch = cleaned.match(/(\d+)/);
                 if (numMatch) {
                     qty = parseInt(numMatch[1]) || 1;
@@ -465,21 +474,25 @@ async function handleCameraFile(e) {
                 }
             }
             
-            if (name) {
+            // Убираем мусорные символы
+            name = name.replace(/[^\w\sа-яА-ЯёЁ\-\.\/\(\)]/g, '').trim();
+            
+            if (name && name.length > 1) {
                 scannedItemsBuffer.push({ name: name, qty: qty });
             }
         }
         
         if (scannedItemsBuffer.length === 0) {
-            statusDiv.innerHTML = '❌ Ничего не распознано. Попробуйте ближе и при хорошем свете.';
+            statusDiv.innerHTML = '❌ Ничего не распознано. Сфотографируйте ближе, при хорошем свете, чёрный текст на белом фоне.';
             return;
         }
         
+        // Показываем форму для редактирования
         let html = '<p><b>📝 Проверьте и исправьте ошибки:</b></p>';
         scannedItemsBuffer.forEach((item, i) => {
             html += `
             <div style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
-                <span style="color:#999;">${i + 1}.</span>
+                <span style="color:#999; min-width:20px;">${i + 1}.</span>
                 <input type="text" id="sn_${i}" value="${item.name.replace(/"/g, '&quot;')}" placeholder="Название" style="flex:2;">
                 <input type="number" id="sq_${i}" value="${item.qty}" placeholder="Кол-во" style="flex:1; max-width:80px;" min="1">
             </div>`;
@@ -490,7 +503,7 @@ async function handleCameraFile(e) {
         if (btn) btn.style.display = 'block';
         
     } catch (err) {
-        statusDiv.innerHTML = '❌ Ошибка: ' + err.message;
+        statusDiv.innerHTML = '❌ Ошибка сети. Проверьте интернет-соединение.';
         console.error(err);
     }
 }
@@ -501,6 +514,7 @@ async function saveScannedData() {
         const qty = parseFloat(document.getElementById(`sq_${i}`)?.value) || 1;
         if (!name) continue;
         
+        // Ищем существующий товар в локальной базе
         const result = await localDB.allDocs({ include_docs: true });
         const existing = result.rows.find(r => 
             r.doc.type === 'item' && 
@@ -520,6 +534,7 @@ async function saveScannedData() {
             });
         }
         
+        // Журнал
         await localDB.put({
             _id: 'j_' + Date.now() + '_' + i,
             type: 'journal',
@@ -530,6 +545,7 @@ async function saveScannedData() {
             destination: 'Склад'
         });
         
+        // Отправка в облако
         await saveToCloud({ 
             action: 'addItem', id: itemId, name, qty, 
             unit: 'шт', category: '', user: currentUser 
