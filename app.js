@@ -522,3 +522,140 @@ async function saveScannedData() {
     document.getElementById('saveScannedBtn').style.display = 'none';
     renderAll();
 }
+// ================== УЛУЧШЕННЫЙ СКАНЕР ==================
+async function handleCameraFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const statusDiv = document.getElementById('scanResult');
+    if (!statusDiv) return;
+    
+    statusDiv.style.display = 'block';
+    statusDiv.innerHTML = '⏳ Загрузка улучшенной модели русского языка (один раз, ~15 МБ)...';
+    
+    try {
+        // Создаём воркер с улучшенной моделью "best" для русского
+        const worker = await Tesseract.createWorker('rus', Tesseract.OEM.LSTM_ONLY, {
+            langPath: 'https://tessdata.maintained.by/rus-rus2/', // Альтернативный источник моделей
+        });
+        
+        // Настройка параметров для улучшения распознавания
+        await worker.setParameters({
+            tessedit_char_whitelist: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789.,;:- ',
+            preserve_interword_spaces: '1',
+            tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+        });
+        
+        statusDiv.innerHTML = '⏳ Распознавание текста...';
+        
+        const { data: { text } } = await worker.recognize(file);
+        await worker.terminate();
+        
+        // Улучшенный парсинг: ищем строки вида "Название 123" или "Название - 123 шт"
+        const lines = text.split('\n').filter(l => l.trim());
+        scannedItemsBuffer = [];
+        
+        for (const line of lines) {
+            const cleaned = line.trim();
+            if (!cleaned) continue;
+            
+            // Пытаемся найти количество (число в конце или после тире)
+            let name = cleaned;
+            let qty = 1;
+            
+            // Паттерн: "что-то 123" или "что-то - 123"
+            const match = cleaned.match(/^(.*?)[-\s]+(\d+)\s*(шт|кг|м|л|ед)?\.?\s*$/i);
+            if (match) {
+                name = match[1].trim();
+                qty = parseInt(match[2]) || 1;
+            } else {
+                // Если число где-то в середине
+                const numMatch = cleaned.match(/(\d+)/);
+                if (numMatch) {
+                    qty = parseInt(numMatch[1]) || 1;
+                    name = cleaned.replace(numMatch[0], '').trim();
+                }
+            }
+            
+            if (name) {
+                scannedItemsBuffer.push({ name: name, qty: qty });
+            }
+        }
+        
+        if (scannedItemsBuffer.length === 0) {
+            statusDiv.innerHTML = '❌ Ничего не распознано. Попробуйте сфотографировать ближе и при хорошем свете.';
+            return;
+        }
+        
+        // Показываем форму для редактирования
+        let html = '<p><b>📝 Проверьте и исправьте ошибки:</b></p>';
+        scannedItemsBuffer.forEach((item, i) => {
+            html += `
+            <div style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
+                <span style="color:#999; min-width:20px;">${i + 1}.</span>
+                <input type="text" id="sn_${i}" value="${item.name.replace(/"/g, '&quot;')}" placeholder="Название" style="flex:2;">
+                <input type="number" id="sq_${i}" value="${item.qty}" placeholder="Кол-во" style="flex:1; max-width:80px;" min="1">
+            </div>`;
+        });
+        statusDiv.innerHTML = html;
+        
+        const btn = document.getElementById('saveScannedBtn');
+        if (btn) btn.style.display = 'block';
+        
+    } catch (err) {
+        statusDiv.innerHTML = '❌ Ошибка: ' + err.message;
+        console.error(err);
+    }
+}
+
+async function saveScannedData() {
+    for (let i = 0; i < scannedItemsBuffer.length; i++) {
+        const name = document.getElementById(`sn_${i}`)?.value?.trim();
+        const qty = parseFloat(document.getElementById(`sq_${i}`)?.value) || 1;
+        if (!name) continue;
+        
+        // Ищем существующий товар в текущем списке
+        const existing = items.find(item => 
+            item['Наименование'].toLowerCase() === name.toLowerCase()
+        );
+        
+        let itemId;
+        if (existing) {
+            itemId = existing.ID;
+            await send({
+                action: 'addItem',
+                id: itemId,
+                name: name,
+                qty: qty,
+                unit: existing['ЕдиницаИзмерения'] || 'шт',
+                category: existing['Категория'] || '',
+                user: currentUser
+            });
+        } else {
+            itemId = 'item_' + Date.now() + '_' + i;
+            await send({
+                action: 'addItem',
+                id: itemId,
+                name: name,
+                qty: qty,
+                unit: 'шт',
+                category: '',
+                user: currentUser
+            });
+        }
+    }
+    
+    alert('✅ Сохранено!');
+    document.getElementById('scanResult').style.display = 'none';
+    document.getElementById('saveScannedBtn').style.display = 'none';
+    scannedItemsBuffer = [];
+    await loadData();
+}
+
+// Привязка камеры (вызвать при загрузке)
+document.addEventListener('DOMContentLoaded', () => {
+    const cameraInput = document.getElementById('cameraInput');
+    if (cameraInput) {
+        cameraInput.addEventListener('change', handleCameraFile);
+    }
+});
