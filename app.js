@@ -1,7 +1,6 @@
 // ================== НАСТРОЙКИ ==================
-const API_URL = 'https://script.google.com/macros/s/AKfycbwWYRobSfd7gPBjGcTAwKAWPauf5cmlGwbsMUP1PUu7dVPfVYncrK20m98ryacdzu58PQ/exec'; // ← ЗАМЕНИТЕ
+const API_URL = 'https://script.google.com/macros/s/AKfycbwWYRobSfd7gPBjGcTAwKAWPauf5cmlGwbsMUP1PUu7dVPfVYncrK20m98ryacdzu58PQ/exec';
 // ================================================
-
 
 const localDB = new PouchDB('warehouse_local');
 let currentUser = localStorage.getItem('warehouse_user') || '';
@@ -169,29 +168,21 @@ async function renderStockList() {
 }
 
 async function deleteItem(docId) {
-    if (!confirm('Удалить этот товар? Данные будут удалены из таблицы безвозвратно.')) return;
+    if (!confirm('Удалить этот товар?')) return;
     
     try {
         const doc = await localDB.get(docId);
         const itemName = doc.name || 'Неизвестный товар';
-        
-        // Удаляем из локальной базы
         await localDB.remove(doc);
         
-        // Отправляем команду удаления
-        const success = await saveToCloud({
+        await saveToCloud({
             action: 'deleteItem',
             id: docId,
             user: currentUser,
             name: itemName
         });
         
-        if (success) {
-            alert('✅ Товар удалён из таблицы');
-        } else {
-            alert('⚠️ Удалён локально, но не из таблицы. Проверьте интернет.');
-        }
-        
+        alert('✅ Удалено!');
         renderAll();
     } catch (err) {
         alert('Ошибка: ' + err.message);
@@ -393,20 +384,10 @@ function takePhotoForItem(itemId) {
         const reader = new FileReader();
         reader.onload = async (ev) => {
             const base64 = ev.target.result;
-            
             try {
                 const doc = await localDB.get(itemId);
                 doc.photoBase64 = base64;
                 await localDB.put(doc);
-                
-                try {
-                    await saveToCloud({
-                        action: 'updatePhoto',
-                        id: itemId,
-                        photoBase64: base64.substring(0, 50000)
-                    });
-                } catch (e) {}
-                
                 alert('✅ Фото сохранено!');
                 renderAll();
             } catch (err) {
@@ -421,7 +402,6 @@ function takePhotoForItem(itemId) {
 
 async function searchPhotoForItem(itemId, itemName) {
     window.open(`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(itemName)}`, '_blank');
-    
     const url = prompt('Вставьте прямую ссылку на фото (URL):');
     if (!url) return;
     
@@ -429,99 +409,13 @@ async function searchPhotoForItem(itemId, itemName) {
         const doc = await localDB.get(itemId);
         doc.photoUrl = url;
         await localDB.put(doc);
-        
-        await saveToCloud({
-            action: 'updatePhoto',
-            id: itemId,
-            photoUrl: url
-        });
-        
-        alert('✅ Фото из интернета сохранено!');
+        alert('✅ Фото сохранено!');
         renderAll();
     } catch (err) {
         alert('Ошибка: ' + err.message);
     }
 }
 
-// ================== СКАНЕР ==================
-async function handleCameraFile(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    
-    const statusDiv = document.getElementById('scanResult');
-    if (!statusDiv) return;
-    
-    statusDiv.style.display = 'block';
-    statusDiv.innerHTML = '⏳ Идёт распознавание текста...';
-    
-    try {
-        const worker = await Tesseract.createWorker('rus');
-        const { data: { text } } = await worker.recognize(file);
-        await worker.terminate();
-        
-        const lines = text.split('\n').filter(l => l.trim());
-        scannedItemsBuffer = lines.map(line => {
-            const parts = line.trim().split(' ');
-            const qty = parseFloat(parts[parts.length - 1]);
-            const name = isNaN(qty) ? line.trim() : parts.slice(0, -1).join(' ');
-            return { name: name || 'Неизвестно', qty: isNaN(qty) ? 1 : qty };
-        });
-        
-        let html = '<p><b>📝 Проверьте и исправьте ошибки:</b></p>';
-        scannedItemsBuffer.forEach((item, i) => {
-            html += `
-            <div style="display:flex; gap:8px; margin-bottom:8px;">
-                <span style="color:#999;">${i + 1}.</span>
-                <input type="text" id="sn_${i}" value="${item.name.replace(/"/g, '&quot;')}" style="flex:2;">
-                <input type="number" id="sq_${i}" value="${item.qty}" style="flex:1; max-width:80px;" min="1">
-            </div>`;
-        });
-        statusDiv.innerHTML = html;
-        
-        const btn = document.getElementById('saveScannedBtn');
-        if (btn) btn.style.display = 'block';
-    } catch (err) {
-        statusDiv.innerHTML = '❌ Ошибка распознавания.';
-    }
-}
-
-async function saveScannedData() {
-    for (let i = 0; i < scannedItemsBuffer.length; i++) {
-        const name = document.getElementById(`sn_${i}`)?.value?.trim();
-        const qty = parseFloat(document.getElementById(`sq_${i}`)?.value) || 1;
-        if (!name) continue;
-        
-        const result = await localDB.allDocs({ include_docs: true });
-        const existing = result.rows.find(r => r.doc.type === 'item' && r.doc.name.toLowerCase() === name.toLowerCase());
-        
-        let itemId;
-        if (existing) {
-            existing.doc.qty += qty;
-            await localDB.put(existing.doc);
-            itemId = existing.doc._id;
-        } else {
-            itemId = 'item_' + Date.now() + '_' + i;
-            await localDB.put({ _id: itemId, type: 'item', name, category: '', qty, unit: 'шт', photoUrl: '', photoBase64: '' });
-        }
-        
-        await localDB.put({
-            _id: 'j_' + Date.now() + '_' + i,
-            type: 'journal',
-            time: new Date().toISOString(),
-            user: currentUser,
-            operation: 'Приход (скан)',
-            itemId, itemName: name, qty,
-            destination: 'Склад'
-        });
-        
-        await saveToCloud({ action: 'addItem', id: itemId, name, qty, unit: 'шт', category: '', user: currentUser });
-    }
-    
-    alert('✅ Сохранено!');
-    document.getElementById('scanResult').style.display = 'none';
-    document.getElementById('saveScannedBtn').style.display = 'none';
-    renderAll();
-}
 // ================== УЛУЧШЕННЫЙ СКАНЕР ==================
 async function handleCameraFile(e) {
     const file = e.target.files[0];
@@ -531,27 +425,24 @@ async function handleCameraFile(e) {
     if (!statusDiv) return;
     
     statusDiv.style.display = 'block';
-    statusDiv.innerHTML = '⏳ Загрузка улучшенной модели русского языка (один раз, ~15 МБ)...';
+    statusDiv.innerHTML = '⏳ Загрузка модели русского языка (~15 МБ, только один раз)...';
     
     try {
-        // Создаём воркер с улучшенной моделью "best" для русского
         const worker = await Tesseract.createWorker('rus', Tesseract.OEM.LSTM_ONLY, {
-            langPath: 'https://tessdata.maintained.by/rus-rus2/', // Альтернативный источник моделей
+            langPath: 'https://tessdata.maintained.by/rus-rus2/',
         });
         
-        // Настройка параметров для улучшения распознавания
         await worker.setParameters({
             tessedit_char_whitelist: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789.,;:- ',
             preserve_interword_spaces: '1',
             tessedit_pageseg_mode: Tesseract.PSM.AUTO,
         });
         
-        statusDiv.innerHTML = '⏳ Распознавание текста...';
+        statusDiv.innerHTML = '⏳ Распознавание...';
         
         const { data: { text } } = await worker.recognize(file);
         await worker.terminate();
         
-        // Улучшенный парсинг: ищем строки вида "Название 123" или "Название - 123 шт"
         const lines = text.split('\n').filter(l => l.trim());
         scannedItemsBuffer = [];
         
@@ -559,17 +450,14 @@ async function handleCameraFile(e) {
             const cleaned = line.trim();
             if (!cleaned) continue;
             
-            // Пытаемся найти количество (число в конце или после тире)
             let name = cleaned;
             let qty = 1;
             
-            // Паттерн: "что-то 123" или "что-то - 123"
             const match = cleaned.match(/^(.*?)[-\s]+(\d+)\s*(шт|кг|м|л|ед)?\.?\s*$/i);
             if (match) {
                 name = match[1].trim();
                 qty = parseInt(match[2]) || 1;
             } else {
-                // Если число где-то в середине
                 const numMatch = cleaned.match(/(\d+)/);
                 if (numMatch) {
                     qty = parseInt(numMatch[1]) || 1;
@@ -583,16 +471,15 @@ async function handleCameraFile(e) {
         }
         
         if (scannedItemsBuffer.length === 0) {
-            statusDiv.innerHTML = '❌ Ничего не распознано. Попробуйте сфотографировать ближе и при хорошем свете.';
+            statusDiv.innerHTML = '❌ Ничего не распознано. Попробуйте ближе и при хорошем свете.';
             return;
         }
         
-        // Показываем форму для редактирования
         let html = '<p><b>📝 Проверьте и исправьте ошибки:</b></p>';
         scannedItemsBuffer.forEach((item, i) => {
             html += `
             <div style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
-                <span style="color:#999; min-width:20px;">${i + 1}.</span>
+                <span style="color:#999;">${i + 1}.</span>
                 <input type="text" id="sn_${i}" value="${item.name.replace(/"/g, '&quot;')}" placeholder="Название" style="flex:2;">
                 <input type="number" id="sq_${i}" value="${item.qty}" placeholder="Кол-во" style="flex:1; max-width:80px;" min="1">
             </div>`;
@@ -614,48 +501,44 @@ async function saveScannedData() {
         const qty = parseFloat(document.getElementById(`sq_${i}`)?.value) || 1;
         if (!name) continue;
         
-        // Ищем существующий товар в текущем списке
-        const existing = items.find(item => 
-            item['Наименование'].toLowerCase() === name.toLowerCase()
+        const result = await localDB.allDocs({ include_docs: true });
+        const existing = result.rows.find(r => 
+            r.doc.type === 'item' && 
+            r.doc.name.toLowerCase() === name.toLowerCase()
         );
         
         let itemId;
         if (existing) {
-            itemId = existing.ID;
-            await send({
-                action: 'addItem',
-                id: itemId,
-                name: name,
-                qty: qty,
-                unit: existing['ЕдиницаИзмерения'] || 'шт',
-                category: existing['Категория'] || '',
-                user: currentUser
-            });
+            existing.doc.qty += qty;
+            await localDB.put(existing.doc);
+            itemId = existing.doc._id;
         } else {
             itemId = 'item_' + Date.now() + '_' + i;
-            await send({
-                action: 'addItem',
-                id: itemId,
-                name: name,
-                qty: qty,
-                unit: 'шт',
-                category: '',
-                user: currentUser
+            await localDB.put({ 
+                _id: itemId, type: 'item', name, category: '', 
+                qty, unit: 'шт', photoUrl: '', photoBase64: '' 
             });
         }
+        
+        await localDB.put({
+            _id: 'j_' + Date.now() + '_' + i,
+            type: 'journal',
+            time: new Date().toISOString(),
+            user: currentUser,
+            operation: 'Приход (скан)',
+            itemId, itemName: name, qty,
+            destination: 'Склад'
+        });
+        
+        await saveToCloud({ 
+            action: 'addItem', id: itemId, name, qty, 
+            unit: 'шт', category: '', user: currentUser 
+        });
     }
     
     alert('✅ Сохранено!');
     document.getElementById('scanResult').style.display = 'none';
     document.getElementById('saveScannedBtn').style.display = 'none';
     scannedItemsBuffer = [];
-    await loadData();
+    renderAll();
 }
-
-// Привязка камеры (вызвать при загрузке)
-document.addEventListener('DOMContentLoaded', () => {
-    const cameraInput = document.getElementById('cameraInput');
-    if (cameraInput) {
-        cameraInput.addEventListener('change', handleCameraFile);
-    }
-});
